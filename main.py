@@ -15,14 +15,39 @@ from PyQt5.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QShortcut, QGraphicsDropShadowEffect,
     QSystemTrayIcon, QMenu, QAction, QFrame
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QPoint, QPropertyAnimation, QEasingCurve
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QPoint, QPropertyAnimation, QEasingCurve, QEvent
 from PyQt5.QtGui import QFont, QColor, QCursor, QIcon, QPixmap, QPainter, QLinearGradient
 from PyQt5.QtWidgets import QGraphicsOpacityEffect
 
 from translator import Translator
 from pynput.keyboard import Key, Controller as KeyboardController
+import keyboard  # 引入 keyboard 库代替 pynput 全局热键
 
 user32 = ctypes.windll.user32
+kernel32 = ctypes.windll.kernel32
+
+def _force_activate_window(hwnd):
+    """强制激活窗口（绕过 Windows 限制）"""
+    try:
+        current_thread_id = kernel32.GetCurrentThreadId()
+        foreground_hwnd = user32.GetForegroundWindow()
+        foreground_thread_id = user32.GetWindowThreadProcessId(foreground_hwnd, None)
+        
+        # 附着线程输入
+        if current_thread_id != foreground_thread_id:
+            user32.AttachThreadInput(foreground_thread_id, current_thread_id, True)
+            
+        # 强制置前
+        user32.SetForegroundWindow(hwnd)
+        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        user32.BringWindowToTop(hwnd)
+        
+        # 解除附着
+        if current_thread_id != foreground_thread_id:
+            user32.AttachThreadInput(foreground_thread_id, current_thread_id, False)
+            
+    except Exception as e:
+        print(f"强制激活失败: {e}")
 
 
 class FloatingTranslator(QWidget):
@@ -45,7 +70,38 @@ class FloatingTranslator(QWidget):
         
         self._init_ui()
         self._setup_shortcuts()
+
+        self._setup_global_hotkey()
         self.translation_done.connect(self._show_result)
+
+    def _setup_global_hotkey(self):
+        """设置全局快捷键 Ctrl+Space"""
+        def on_activate():
+            # 在主线程执行显示逻辑
+            QTimer.singleShot(0, self._wake_up)
+            
+        # 使用 keyboard 库，suppress=False 确保不拦截按键（允许输入法切换）
+        try:
+            keyboard.add_hotkey('ctrl+space', on_activate, suppress=False)
+        except Exception as e:
+            print(f"热键注册失败: {e}")
+
+    def _wake_up(self):
+        """唤醒窗口"""
+        hwnd = int(self.winId())
+        
+        # 1. 确保窗口可见
+        if not self.isVisible():
+            self.showNormal()
+            self.show()
+            
+        # 2. 强制激活
+        _force_activate_window(hwnd)
+        
+        # 3. Qt 层面再次确认
+        self.raise_()
+        self.activateWindow()
+        self.input_box.setFocus()
 
     def _init_ui(self):
         """初始化简洁 UI"""
@@ -66,6 +122,9 @@ class FloatingTranslator(QWidget):
         shadow.setColor(QColor(100, 200, 255, 50))
         shadow.setOffset(0, 5)
         self.container.setGraphicsEffect(shadow)
+        
+        # 安装事件过滤器以处理焦点丢失
+        self.installEventFilter(self)
         
         # 样式
         self.setStyleSheet("""
@@ -439,6 +498,17 @@ class FloatingTranslator(QWidget):
         event.ignore()
         self.hide()
 
+    def eventFilter(self, obj, event):
+        # 监听窗口失焦事件（非置顶模式下自动隐藏）
+        if obj == self and event.type() == QEvent.WindowDeactivate:
+            if not self._pinned and self.isVisible():
+                # 只有当焦点真正离开整个应用窗口时才隐藏
+                # 检查当前活动窗口是否还是自己（可能是子控件）
+                if QApplication.activeWindow() != self:
+                    self.hide()
+                    return True
+        return super().eventFilter(obj, event)
+
 
 class SystemTray:
     def __init__(self, window):
@@ -521,3 +591,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

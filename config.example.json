@@ -1,0 +1,7 @@
+{
+    "api_base": "https://api.minimaxi.com/v1",
+    "api_key": "YOUR_API_KEY_HERE",
+    "model": "MiniMax-M2.1",
+    "hotkey": "ctrl+alt+t",
+    "auto_hide_seconds": 5
+}
